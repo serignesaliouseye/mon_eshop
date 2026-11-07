@@ -2,18 +2,25 @@
 // admin/dashboard.php
 session_start();
 require_once '../config/db.php';
+require_once '../includes/admin_nav.php';
 
 // Protection admin
-if (!isset($_SESSION['user_id']) || $_SESSION['is_admin'] != 1) {
+if (empty($_SESSION['user_id']) || empty($_SESSION['is_admin']) || $_SESSION['is_admin'] != 1) {
     header('Location: ../auth/connexion.php');
     exit;
 }
 
 // Statistiques
-$nb_produits  = $pdo->query('SELECT COUNT(*) FROM products')->fetchColumn();
-$nb_commandes = $pdo->query('SELECT COUNT(*) FROM orders')->fetchColumn();
-$nb_clients   = $pdo->query('SELECT COUNT(*) FROM users WHERE is_admin = 0')->fetchColumn();
-$ca_total     = $pdo->query('SELECT SUM(prix_unitaire) FROM order_details')->fetchColumn();
+$nb_produits  = (int) $pdo->query('SELECT COUNT(*) FROM products')->fetchColumn();
+$nb_commandes = (int) $pdo->query('SELECT COUNT(*) FROM orders')->fetchColumn();
+$nb_clients   = (int) $pdo->query('SELECT COUNT(*) FROM users WHERE is_admin = 0')->fetchColumn();
+
+// Chiffre d'affaires : prix x quantité (si la colonne "quantite" n'existe pas, on retombe sur l'ancien calcul)
+try {
+    $ca_total = $pdo->query('SELECT SUM(prix_unitaire * quantite) FROM order_details')->fetchColumn();
+} catch (PDOException $e) {
+    $ca_total = $pdo->query('SELECT SUM(prix_unitaire) FROM order_details')->fetchColumn();
+}
 
 // 5 dernières commandes
 $dernieres = $pdo->query(
@@ -21,116 +28,114 @@ $dernieres = $pdo->query(
      FROM orders o JOIN users u ON u.id = o.user_id
      ORDER BY o.created_at DESC LIMIT 5'
 )->fetchAll();
-?>
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard Admin – SenFood</title>
-    <link rel="stylesheet" href="../assets/css/style.css">
-    <link rel="stylesheet" href="../assets/css/admin.css">
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
-</head>
-<body>
 
-<?php include '../includes/header.php'; ?>
+$titre_page = 'Dashboard admin';
+include '../includes/header.php';
+?>
 
 <div class="admin-layout">
 
-    <!-- Sidebar -->
-    <aside class="admin-sidebar">
-        <h2>⚙️ Admin</h2>
-        <nav>
-            <a href="dashboard.php" class="active">📊 Dashboard</a>
-            <a href="produits.php">🍛 Produits</a>
-            <a href="commandes.php">📦 Commandes</a>
-            <a href="../index.php">🏠 Voir le site</a>
-        </nav>
-    </aside>
+    <?php sidebar_admin('dashboard'); ?>
 
     <!-- Contenu principal -->
     <main class="admin-main">
-        <h1>Tableau de bord</h1>
-        <p class="admin-bienvenue">Bienvenue, <?= htmlspecialchars($_SESSION['user_nom']) ?> !</p>
+
+        <div class="admin-header-row">
+            <div>
+                <h1>Tableau de bord</h1>
+                <p class="admin-bienvenue">Bonjour <?= htmlspecialchars($_SESSION['user_nom']) ?>, voici l'activité de SenFood.</p>
+            </div>
+            <div class="acces-rapides">
+                <a href="produits.php?action=ajouter" class="btn btn-primary btn-small">+ Ajouter un plat</a>
+                <a href="commandes.php" class="btn btn-outline btn-small">Voir les commandes</a>
+            </div>
+        </div>
 
         <!-- Statistiques -->
         <div class="stats-grid">
             <div class="stat-card stat-orange">
-                <span class="stat-icon">🍛</span>
+                <span class="stat-icon"><?= icone('plat') ?></span>
                 <div>
                     <p class="stat-nombre"><?= $nb_produits ?></p>
                     <p class="stat-label">Plats au catalogue</p>
                 </div>
             </div>
             <div class="stat-card stat-blue">
-                <span class="stat-icon">📦</span>
+                <span class="stat-icon"><?= icone('commande') ?></span>
                 <div>
                     <p class="stat-nombre"><?= $nb_commandes ?></p>
-                    <p class="stat-label">Commandes total</p>
+                    <p class="stat-label">Commandes au total</p>
                 </div>
             </div>
             <div class="stat-card stat-green">
-                <span class="stat-icon">👥</span>
+                <span class="stat-icon"><?= icone('clients') ?></span>
                 <div>
                     <p class="stat-nombre"><?= $nb_clients ?></p>
                     <p class="stat-label">Clients inscrits</p>
                 </div>
             </div>
             <div class="stat-card stat-purple">
-                <span class="stat-icon">💰</span>
+                <span class="stat-icon"><?= icone('argent') ?></span>
                 <div>
-                    <p class="stat-nombre"><?= number_format($ca_total ?? 0, 0, ',', ' ') ?></p>
+                    <p class="stat-nombre"><?= number_format((float) ($ca_total ?? 0), 0, ',', ' ') ?></p>
                     <p class="stat-label">Chiffre d'affaires (FCFA)</p>
                 </div>
             </div>
         </div>
 
-        <!-- Accès rapides -->
-        <div class="acces-rapides">
-            <a href="produits.php?action=ajouter" class="btn btn-primary">+ Ajouter un plat</a>
-            <a href="commandes.php" class="btn btn-outline">Voir les commandes</a>
+        <!-- Dernières commandes -->
+        <div class="admin-section-head">
+            <h2>Dernières commandes</h2>
+            <a href="commandes.php">Tout voir</a>
         </div>
 
-        <!-- Dernières commandes -->
-        <h2 style="margin: 2rem 0 1rem;">Dernières commandes</h2>
-        <div class="table-responsive">
-            <table class="table-admin">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Client</th>
-                        <th>Adresse</th>
-                        <th>Statut</th>
-                        <th>Date</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($dernieres as $cmd): ?>
-                    <tr>
-                        <td>#<?= $cmd['id'] ?></td>
-                        <td><?= htmlspecialchars($cmd['client_nom']) ?></td>
-                        <td><?= htmlspecialchars(substr($cmd['adresse'], 0, 40)) ?>...</td>
-                        <td>
-                            <span class="statut statut-<?= strtolower(str_replace([' ', 'é'], ['-', 'e'], $cmd['statut'])) ?>">
-                                <?= htmlspecialchars($cmd['statut']) ?>
-                            </span>
-                        </td>
-                        <td><?= date('d/m/Y', strtotime($cmd['created_at'])) ?></td>
-                        <td>
-                            <a href="commandes.php?id=<?= $cmd['id'] ?>" class="btn btn-outline btn-small">Gérer</a>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
+        <div class="admin-card">
+            <?php if (empty($dernieres)): ?>
+                <p class="admin-vide">Aucune commande pour le moment.</p>
+            <?php else: ?>
+            <div class="table-responsive">
+                <table class="table-admin">
+                    <thead>
+                        <tr>
+                            <th>N°</th>
+                            <th>Client</th>
+                            <th>Adresse</th>
+                            <th>Statut</th>
+                            <th>Date</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($dernieres as $cmd):
+                            $adresse = $cmd['adresse'] ?? '';
+                            $adresse_courte = mb_strlen($adresse) > 40 ? mb_substr($adresse, 0, 40) . '…' : $adresse;
+                            $classe_statut = mb_strtolower(str_replace([' ', 'é'], ['-', 'e'], $cmd['statut']));
+                        ?>
+                        <tr>
+                            <td><strong>#<?= (int) $cmd['id'] ?></strong></td>
+                            <td><?= htmlspecialchars($cmd['client_nom']) ?></td>
+                            <td class="td-muted"><?= htmlspecialchars($adresse_courte) ?></td>
+                            <td>
+                                <span class="statut statut-<?= htmlspecialchars($classe_statut) ?>">
+                                    <?= htmlspecialchars($cmd['statut']) ?>
+                                </span>
+                            </td>
+                            <td class="td-muted"><?= date('d/m/Y', strtotime($cmd['created_at'])) ?></td>
+                            <td class="td-droite">
+                                <a href="commandes.php?id=<?= (int) $cmd['id'] ?>" class="btn btn-outline btn-small">Gérer</a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
         </div>
 
     </main>
 </div>
 
 <?php include '../includes/footer.php'; ?>
-<script src="../assets/js/main.js"></script>
+<script src="/assets/js/main.js"></script>
 </body>
 </html>

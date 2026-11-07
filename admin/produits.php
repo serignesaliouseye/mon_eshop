@@ -1,65 +1,109 @@
 <?php
-// admin/produits.php – CRUD complet des plats
+// admin/produits.php – CRUD des plats
 session_start();
 require_once '../config/db.php';
+require_once '../includes/admin_nav.php';
 
-if (!isset($_SESSION['user_id']) || $_SESSION['is_admin'] != 1) {
+// ── Protection admin ──
+if (empty($_SESSION['user_id']) || empty($_SESSION['is_admin']) || $_SESSION['is_admin'] != 1) {
     header('Location: ../auth/connexion.php');
     exit;
 }
 
+// ── Jeton CSRF ──
+if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(32));
+}
+$csrf = $_SESSION['csrf'];
+
+const IMAGE_TAILLE_MAX = 3 * 1024 * 1024; // 3 Mo
+const IMAGE_TYPES = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+
 $action  = $_GET['action'] ?? 'liste';
-$id      = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+$id      = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 $message = '';
 $erreur  = '';
 
-$categories = $pdo->query('SELECT * FROM categories')->fetchAll();
+$categories    = $pdo->query('SELECT * FROM categories ORDER BY nom')->fetchAll();
+$ids_categorie = array_map('intval', array_column($categories, 'id'));
 
-// ── SUPPRIMER ──
-if ($action === 'supprimer' && $id > 0) {
-    $pdo->prepare('DELETE FROM products WHERE id = :id')->execute([':id' => $id]);
-    header('Location: produits.php?msg=supprime');
-    exit;
+// ── Plat à modifier (chargé avant le traitement du formulaire) ──
+$produit_edit = null;
+if ($action === 'modifier' && $id > 0) {
+    $stmt = $pdo->prepare('SELECT * FROM products WHERE id = :id');
+    $stmt->execute([':id' => $id]);
+    $produit_edit = $stmt->fetch() ?: null;
+    if (!$produit_edit) {
+        $erreur = 'Plat introuvable.';
+        $action = 'liste';
+    }
 }
 
-// ── AJOUTER / MODIFIER ──
+// ── Traitement des formulaires (POST) ──
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $nom         = trim($_POST['nom']         ?? '');
-    $prix        = (float)($_POST['prix']     ?? 0);
-    $description = trim($_POST['description'] ?? '');
-    $cat_id      = (int)($_POST['categorie_id'] ?? 0);
-    $image_path  = trim($_POST['image_actuelle'] ?? '');
 
-    if (empty($nom) || $prix <= 0) {
-        $erreur = 'Le nom et le prix sont obligatoires.';
-    } else {
-        // Upload image
-        if (!empty($_FILES['image']['name'])) {
-            $ext       = strtolower(pathinfo($_FILES['image']['name'], PATHINFO_EXTENSION));
-            $exts_ok   = ['jpg', 'jpeg', 'png', 'webp'];
-            if (in_array($ext, $exts_ok)) {
-                $nom_fichier = 'plat_' . time() . '.' . $ext;
-                $dest        = '../assets/images/' . $nom_fichier;
-                if (move_uploaded_file($_FILES['image']['tmp_name'], $dest)) {
-                    $image_path = 'assets/images/' . $nom_fichier;
-                }
+    if (!hash_equals($csrf, $_POST['csrf'] ?? '')) {
+        $erreur = 'Session expirée, veuillez réessayer.';
+
+    // Suppression
+    } elseif (($_POST['action'] ?? '') === 'supprimer') {
+        $del_id = (int) ($_POST['id'] ?? 0);
+        try {
+            $ok = $pdo->prepare('DELETE FROM products WHERE id = :id')->execute([':id' => $del_id]);
+        } catch (PDOException $e) {
+            $ok = false; // plat déjà utilisé dans des commandes
+        }
+        if ($ok) {
+            header('Location: produits.php?msg=supprime');
+            exit;
+        }
+        $erreur = 'Ce plat est lié à des commandes et ne peut pas être supprimé.';
+
+    // Ajout / modification
+    } elseif ($action === 'ajouter' || $action === 'modifier') {
+        $nom         = trim($_POST['nom'] ?? '');
+        $prix        = (float) ($_POST['prix'] ?? 0);
+        $description = trim($_POST['description'] ?? '');
+        $cat_id      = (int) ($_POST['categorie_id'] ?? 0);
+        $cat_id      = in_array($cat_id, $ids_categorie, true) ? $cat_id : null;
+        $image_path  = $produit_edit['image'] ?? '';
+
+        if ($nom === '' || $prix <= 0) {
+            $erreur = 'Le nom et le prix sont obligatoires.';
+        }
+
+        // Image : taille, vrai type MIME, nom aléatoire
+        if ($erreur === '' && !empty($_FILES['image']['name'])) {
+            $f = $_FILES['image'];
+            if ($f['error'] !== UPLOAD_ERR_OK) {
+                $erreur = "Le téléversement de l'image a échoué.";
+            } elseif ($f['size'] > IMAGE_TAILLE_MAX) {
+                $erreur = 'Image trop lourde (3 Mo maximum).';
             } else {
-                $erreur = 'Format image non accepté (jpg, png, webp uniquement).';
+                $info = @getimagesize($f['tmp_name']);
+                $ext  = $info ? (IMAGE_TYPES[$info['mime']] ?? null) : null;
+                if (!$ext) {
+                    $erreur = 'Format image non accepté (jpg, png, webp uniquement).';
+                } else {
+                    $nom_fichier = 'plat_' . bin2hex(random_bytes(6)) . '.' . $ext;
+                    if (move_uploaded_file($f['tmp_name'], dirname(__DIR__) . '/assets/images/' . $nom_fichier)) {
+                        $image_path = 'assets/images/' . $nom_fichier;
+                    } else {
+                        $erreur = "Impossible d'enregistrer l'image.";
+                    }
+                }
             }
         }
 
-        if (empty($erreur)) {
-            if ($action === 'modifier' && $id > 0) {
-                $stmt = $pdo->prepare(
-                    'UPDATE products SET nom=:nom, prix=:prix, description=:desc, categorie_id=:cat, image=:img WHERE id=:id'
-                );
-                $stmt->execute([':nom'=>$nom,':prix'=>$prix,':desc'=>$description,':cat'=>$cat_id,':img'=>$image_path,':id'=>$id]);
+        if ($erreur === '') {
+            $params = [':nom' => $nom, ':prix' => $prix, ':desc' => $description, ':cat' => $cat_id, ':img' => $image_path];
+            if ($action === 'modifier' && $produit_edit) {
+                $pdo->prepare('UPDATE products SET nom=:nom, prix=:prix, description=:desc, categorie_id=:cat, image=:img WHERE id=:id')
+                    ->execute($params + [':id' => $id]);
                 header('Location: produits.php?msg=modifie');
             } else {
-                $stmt = $pdo->prepare(
-                    'INSERT INTO products (nom, prix, description, categorie_id, image) VALUES (:nom,:prix,:desc,:cat,:img)'
-                );
-                $stmt->execute([':nom'=>$nom,':prix'=>$prix,':desc'=>$description,':cat'=>$cat_id,':img'=>$image_path]);
+                $pdo->prepare('INSERT INTO products (nom, prix, description, categorie_id, image) VALUES (:nom,:prix,:desc,:cat,:img)')
+                    ->execute($params);
                 header('Location: produits.php?msg=ajoute');
             }
             exit;
@@ -67,49 +111,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Messages
+// ── Message de confirmation ──
+$msgs = ['ajoute' => 'Plat ajouté avec succès.', 'modifie' => 'Plat modifié avec succès.', 'supprime' => 'Plat supprimé.'];
 if (isset($_GET['msg'])) {
-    $msgs = ['ajoute'=>'Plat ajouté avec succès !', 'modifie'=>'Plat modifié avec succès !', 'supprime'=>'Plat supprimé.'];
     $message = $msgs[$_GET['msg']] ?? '';
 }
 
-// Charger le produit pour modification
-$produit_edit = null;
-if ($action === 'modifier' && $id > 0) {
-    $stmt = $pdo->prepare('SELECT * FROM products WHERE id = :id');
-    $stmt->execute([':id' => $id]);
-    $produit_edit = $stmt->fetch();
+// ── Valeurs du formulaire (ce que l'admin a tapé prime en cas d'erreur) ──
+$form = [
+    'nom'          => $_POST['nom']          ?? $produit_edit['nom']          ?? '',
+    'prix'         => $_POST['prix']         ?? $produit_edit['prix']         ?? '',
+    'description'  => $_POST['description']  ?? $produit_edit['description']  ?? '',
+    'categorie_id' => $_POST['categorie_id'] ?? $produit_edit['categorie_id'] ?? '',
+];
+$image_actuelle = $produit_edit['image'] ?? '';
+
+// ── Liste des plats + recherche ──
+$produits = $pdo->query(
+    'SELECT p.*, c.nom AS categorie_nom
+     FROM products p LEFT JOIN categories c ON p.categorie_id = c.id
+     ORDER BY p.created_at DESC'
+)->fetchAll();
+
+$q = trim($_GET['q'] ?? '');
+$total_plats = count($produits);
+if ($q !== '') {
+    $produits = array_values(array_filter($produits, fn($p) =>
+        mb_stripos($p['nom'], $q) !== false || mb_stripos($p['categorie_nom'] ?? '', $q) !== false
+    ));
 }
 
-// Liste des produits
-$produits = $pdo->query(
-    'SELECT p.*, c.nom AS categorie_nom FROM products p LEFT JOIN categories c ON p.categorie_id = c.id ORDER BY p.created_at DESC'
-)->fetchAll();
-?>
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestion des plats – SenFood Admin</title>
-    <link rel="stylesheet" href="../assets/css/style.css">
-    <link rel="stylesheet" href="../assets/css/admin.css">
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Lato:wght@400;700&display=swap" rel="stylesheet">
-</head>
-<body>
+function url_image(?string $chemin): string {
+    return '/' . ltrim((string) $chemin, '/');
+}
 
-<?php include '../includes/header.php'; ?>
+$mode_formulaire = ($action === 'ajouter') || ($action === 'modifier' && $produit_edit);
+$titre_page = 'Plats';
+include '../includes/header.php';
+?>
 
 <div class="admin-layout">
-    <aside class="admin-sidebar">
-        <h2>⚙️ Admin</h2>
-        <nav>
-            <a href="dashboard.php">📊 Dashboard</a>
-            <a href="produits.php" class="active">🍛 Produits</a>
-            <a href="commandes.php">📦 Commandes</a>
-            <a href="../index.php">🏠 Voir le site</a>
-        </nav>
-    </aside>
+    <?php sidebar_admin('produits'); ?>
 
     <main class="admin-main">
 
@@ -120,53 +162,82 @@ $produits = $pdo->query(
             <div class="alert alert-error"><p><?= htmlspecialchars($erreur) ?></p></div>
         <?php endif; ?>
 
-        <!-- Formulaire ajout / modification -->
-        <?php if ($action === 'ajouter' || $action === 'modifier'): ?>
-        <h1><?= $action === 'modifier' ? 'Modifier le plat' : 'Ajouter un plat' ?></h1>
+        <?php if ($mode_formulaire): ?>
 
-        <form method="POST" action="produits.php?action=<?= $action ?><?= $id ? '&id='.$id : '' ?>"
-              enctype="multipart/form-data" class="form-admin">
+        <!-- ===== AJOUT / MODIFICATION ===== -->
+        <a href="produits.php" class="btn-retour"><?= icone('retour', 16) ?> Retour aux plats</a>
 
-            <input type="hidden" name="image_actuelle"
-                   value="<?= htmlspecialchars($produit_edit['image'] ?? '') ?>">
-
-            <div class="form-group">
-                <label>Nom du plat</label>
-                <input type="text" name="nom" required
-                       value="<?= htmlspecialchars($produit_edit['nom'] ?? $_POST['nom'] ?? '') ?>">
+        <div class="admin-header-row">
+            <div>
+                <h1><?= $action === 'modifier' ? 'Modifier le plat' : 'Ajouter un plat' ?></h1>
+                <p class="admin-bienvenue">
+                    <?= $action === 'modifier' ? 'Mettez à jour les informations de ce plat.' : 'Il apparaîtra immédiatement dans le catalogue.' ?>
+                </p>
             </div>
-            <div class="form-row">
+        </div>
+
+        <form method="POST"
+              action="produits.php?action=<?= $action ?><?= $id ? '&id=' . $id : '' ?>"
+              enctype="multipart/form-data" class="admin-edit-grid">
+            <input type="hidden" name="csrf" value="<?= $csrf ?>">
+
+            <div class="admin-card admin-card-pad">
+                <h2 class="admin-card-titre">Informations du plat</h2>
+
                 <div class="form-group">
-                    <label>Prix (FCFA)</label>
-                    <input type="number" name="prix" min="0" step="50" required
-                           value="<?= $produit_edit['prix'] ?? $_POST['prix'] ?? '' ?>">
+                    <label for="nom">Nom du plat</label>
+                    <input type="text" id="nom" name="nom" required maxlength="120"
+                           value="<?= htmlspecialchars($form['nom']) ?>" placeholder="Ex. Thiéboudienne">
                 </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="prix">Prix (FCFA)</label>
+                        <input type="number" id="prix" name="prix" min="0" step="50" required
+                               value="<?= htmlspecialchars((string) $form['prix']) ?>" placeholder="3500">
+                    </div>
+                    <div class="form-group">
+                        <label for="categorie_id">Catégorie</label>
+                        <select id="categorie_id" name="categorie_id">
+                            <option value="">Aucune</option>
+                            <?php foreach ($categories as $cat): ?>
+                                <option value="<?= (int) $cat['id'] ?>"
+                                    <?= (string) $form['categorie_id'] === (string) $cat['id'] ? 'selected' : '' ?>>
+                                    <?= htmlspecialchars($cat['nom']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+
                 <div class="form-group">
-                    <label>Catégorie</label>
-                    <select name="categorie_id">
-                        <option value="">-- Choisir --</option>
-                        <?php foreach ($categories as $cat): ?>
-                        <option value="<?= $cat['id'] ?>"
-                            <?= ($produit_edit['categorie_id'] ?? '') == $cat['id'] ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($cat['nom']) ?>
-                        </option>
-                        <?php endforeach; ?>
-                    </select>
+                    <label for="description">Description</label>
+                    <textarea id="description" name="description" rows="5"
+                              placeholder="Ingrédients, accompagnements, portion…"><?= htmlspecialchars($form['description']) ?></textarea>
                 </div>
             </div>
-            <div class="form-group">
-                <label>Description</label>
-                <textarea name="description" rows="4"><?= htmlspecialchars($produit_edit['description'] ?? '') ?></textarea>
+
+            <div class="admin-card admin-card-pad">
+                <h2 class="admin-card-titre">Photo</h2>
+
+                <div class="upload-preview" id="apercu">
+                    <?php if ($image_actuelle): ?>
+                        <img src="<?= htmlspecialchars(url_image($image_actuelle)) ?>" alt="Image actuelle" id="apercu-img"
+                             onerror="this.onerror=null;this.src='/assets/images/thiep.jpg'">
+                    <?php else: ?>
+                        <div class="upload-vide" id="apercu-vide"><?= icone('image', 32) ?><span>Aucune image</span></div>
+                        <img src="" alt="Aperçu" id="apercu-img" hidden>
+                    <?php endif; ?>
+                </div>
+
+                <label for="image" class="btn btn-outline btn-small btn-full">
+                    <?= $image_actuelle ? "Changer l'image" : 'Choisir une image' ?>
+                </label>
+                <input type="file" id="image" name="image" accept="image/jpeg,image/png,image/webp" class="input-cache">
+                <p class="aide-champ">JPG, PNG ou WebP, 3 Mo maximum.</p>
             </div>
-            <div class="form-group">
-                <label>Image du plat</label>
-                <?php if (!empty($produit_edit['image'])): ?>
-                    <img src="../<?= htmlspecialchars($produit_edit['image']) ?>"
-                         alt="Image actuelle" style="max-height:100px;margin-bottom:0.5rem;border-radius:8px;">
-                <?php endif; ?>
-                <input type="file" name="image" accept="image/*">
-            </div>
-            <div class="form-actions">
+
+            <div class="form-actions form-actions--pleine">
                 <button type="submit" class="btn btn-primary">
                     <?= $action === 'modifier' ? 'Enregistrer les modifications' : 'Ajouter le plat' ?>
                 </button>
@@ -174,56 +245,97 @@ $produits = $pdo->query(
             </div>
         </form>
 
+        <script>
+            // Aperçu de l'image choisie avant l'envoi
+            document.getElementById('image').addEventListener('change', function () {
+                var fichier = this.files[0];
+                if (!fichier) return;
+                var img = document.getElementById('apercu-img');
+                var vide = document.getElementById('apercu-vide');
+                img.src = URL.createObjectURL(fichier);
+                img.hidden = false;
+                if (vide) vide.hidden = true;
+            });
+        </script>
+
         <?php else: ?>
 
-        <!-- Liste des produits -->
+        <!-- ===== LISTE DES PLATS ===== -->
         <div class="admin-header-row">
-            <h1>Gestion des plats (<?= count($produits) ?>)</h1>
-            <a href="produits.php?action=ajouter" class="btn btn-primary">+ Ajouter un plat</a>
+            <div>
+                <h1>Plats</h1>
+                <p class="admin-bienvenue"><?= $total_plats ?> plat(s) au catalogue</p>
+            </div>
+            <a href="produits.php?action=ajouter" class="btn btn-primary btn-small"><?= icone('plus', 16) ?> Ajouter un plat</a>
         </div>
 
-        <div class="table-responsive">
-            <table class="table-admin">
-                <thead>
-                    <tr>
-                        <th>Image</th>
-                        <th>Nom</th>
-                        <th>Catégorie</th>
-                        <th>Prix</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($produits as $p): ?>
-                    <tr>
-                        <td>
-                            <img src="../<?= htmlspecialchars($p['image']) ?>"
-                                 alt="<?= htmlspecialchars($p['nom']) ?>"
-                                 style="width:60px;height:50px;object-fit:cover;border-radius:6px;"
-                                 onerror="this.src='../assets/images/default.jpg'">
-                        </td>
-                        <td><?= htmlspecialchars($p['nom']) ?></td>
-                        <td><?= htmlspecialchars($p['categorie_nom'] ?? '—') ?></td>
-                        <td><?= number_format($p['prix'], 0, ',', ' ') ?> FCFA</td>
-                        <td class="td-actions">
-                            <a href="produits.php?action=modifier&id=<?= $p['id'] ?>"
-                               class="btn btn-outline btn-small">✏️ Modifier</a>
-                            <button class="btn btn-danger btn-small"
-                                    onclick="confirmerSuppression('Supprimer le plat &quot;<?= htmlspecialchars($p['nom']) ?>&quot; ?', () => { window.location.href=\'produits.php?action=supprimer&id=<?= $p['id'] ?>\' })">
-                                🗑️ Supprimer
-                            </button>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
+        <form method="GET" class="admin-recherche" role="search">
+            <?= icone('search', 18) ?>
+            <input type="search" name="q" value="<?= htmlspecialchars($q) ?>" placeholder="Rechercher un plat ou une catégorie">
+        </form>
+
+        <div class="admin-card">
+            <?php if (empty($produits)): ?>
+                <p class="admin-vide">
+                    <?= $q !== '' ? 'Aucun plat ne correspond à votre recherche.' : "Aucun plat pour l'instant. Ajoutez le premier !" ?>
+                </p>
+            <?php else: ?>
+            <div class="table-responsive">
+                <table class="table-admin">
+                    <thead>
+                        <tr>
+                            <th>Plat</th>
+                            <th>Catégorie</th>
+                            <th>Prix</th>
+                            <th class="td-droite">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($produits as $p): $pid = (int) $p['id']; ?>
+                        <tr>
+                            <td>
+                                <div class="cellule-plat">
+                                    <img src="<?= htmlspecialchars(url_image($p['image'])) ?>"
+                                         alt="" class="produit-miniature"
+                                         onerror="this.onerror=null;this.src='/assets/images/thiep.jpg'">
+                                    <strong><?= htmlspecialchars($p['nom']) ?></strong>
+                                </div>
+                            </td>
+                            <td>
+                                <?php if (!empty($p['categorie_nom'])): ?>
+                                    <span class="badge-categorie"><?= htmlspecialchars($p['categorie_nom']) ?></span>
+                                <?php else: ?>
+                                    <span class="td-muted">—</span>
+                                <?php endif; ?>
+                            </td>
+                            <td><strong><?= number_format((float) $p['prix'], 0, ',', ' ') ?></strong> <span class="td-muted">FCFA</span></td>
+                            <td>
+                                <div class="td-actions">
+                                    <a href="produits.php?action=modifier&id=<?= $pid ?>" class="btn-icon btn-icon--edit"
+                                       title="Modifier" aria-label="Modifier <?= htmlspecialchars($p['nom']) ?>"><?= icone('edit', 16) ?></a>
+                                    <form method="POST" class="form-inline"
+                                          onsubmit="return confirm(<?= htmlspecialchars(json_encode('Supprimer le plat « ' . $p['nom'] . ' » ?', JSON_UNESCAPED_UNICODE), ENT_QUOTES) ?>);">
+                                        <input type="hidden" name="csrf" value="<?= $csrf ?>">
+                                        <input type="hidden" name="id" value="<?= $pid ?>">
+                                        <button name="action" value="supprimer" class="btn-icon btn-icon--no"
+                                                title="Supprimer" aria-label="Supprimer <?= htmlspecialchars($p['nom']) ?>"><?= icone('trash', 16) ?></button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
         </div>
 
         <?php endif; ?>
+
     </main>
 </div>
 
 <?php include '../includes/footer.php'; ?>
-<script src="../assets/js/main.js"></script>
+<script src="/assets/js/main.js"></script>
 </body>
 </html>

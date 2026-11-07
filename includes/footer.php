@@ -10,17 +10,17 @@
         <div class="footer-col">
             <h4>Liens rapides</h4>
             <ul>
-                <li><a href="/senfood/index.php">Accueil</a></li>
-                <li><a href="/senfood/client/catalogue.php">Catalogue</a></li>
-                <li><a href="/senfood/client/panier.php">Panier</a></li>
-                <li><a href="/senfood/auth/inscription.php">S'inscrire</a></li>
+                <li><a href="/index.php">Accueil</a></li>
+                <li><a href="/client/catalogue.php">Catalogue</a></li>
+                <li><a href="/client/panier.php">Panier</a></li>
+                <li><a href="/auth/inscription.php">S'inscrire</a></li>
             </ul>
         </div>
 
         <div class="footer-col">
             <h4>Contact</h4>
             <ul>
-                <li>📍 Thies, Sénégal</li>
+                <li>📍 Saint Louis, Sénégal</li>
                 <li>📞 +221 77 000 00 00</li>
                 <li>✉️ contact@senfood.sn</li>
             </ul>
@@ -41,6 +41,6 @@
     </div>
 </footer>
 
-<script src="/senfood/assets/js/main.js"></script>
+<script src="/assets/js/main.js"></script>
 </body>
 </html>
